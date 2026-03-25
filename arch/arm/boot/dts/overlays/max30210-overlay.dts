@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Overlay for MAX30210
+ *
+ * Copyright 2026 Analog Devices Inc.
+ */
+
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pwm/pwm.h>
+
+ /dts-v1/;
+ /plugin/;
+
+/ {
+	compatible = "bcrm, bcm2711";
+};
+
+&{/} {
+	vdd: regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	temperature-sensor@40 {
+		compatible = "adi,max30210";
+		reg = <0x40>;
+		vdd-supply = <&vdd>;
+		powerdown-gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
+
+		interrupt-parent = <&gpio>;
+		interrupts = <17 IRQ_TYPE_EDGE_BOTH>;
+
+		adi,roc-en;
+	};
+};
