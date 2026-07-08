@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Overlay for LT8491
+ *
+ * Copyright 2024 Analog Devices Inc.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "bcrm, bcm2711";
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	battery-charger@10 {
+		compatible = "adi,lt8491";
+		reg = <0x10>;
+		adi,rsense1-micro-ohms = <5000>;
+		adi,rimon-out-ohms = <124000>;
+		adi,rsense2-micro-ohms = <3000>;
+		adi,rdaco-ohms = <64900>;
+		adi,rfbout1-ohms = <113000>;
+		adi,rfbout2-ohms = <10000>;
+		adi,rdaci-ohms = <7000>;
+		adi,rfbin2-ohms = <3480>;
+		adi,rfbin1-ohms = <102000>;
+	};
+};
