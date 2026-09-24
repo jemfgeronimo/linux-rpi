@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0
+/* Overlay for ADM1273
+ *
+ * Copyright 2026 Analog Devices Inc.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2711";
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* Default address 0x10 (all ADDR pins low); adjust reg if jumpers differ */
+	power-monitor@10 {
+		compatible = "adi,adm1273";
+		reg = <0x10>;
+	};
+};

@@ -8,6 +8,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
 	adafruit18.dtbo \
 	adau1977-adc.dtbo \
 	adau7002-simple.dtbo \
+	adm1273.dtbo \
 	ads1015.dtbo \
 	ads1115.dtbo \
 	ads7846.dtbo \
