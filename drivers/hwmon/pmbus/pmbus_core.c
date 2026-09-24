@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/err.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
@@ -1252,6 +1253,11 @@ static ssize_t pmbus_set_sensor(struct device *dev,
 
 	mutex_lock(&data->update_lock);
 	regval = pmbus_data2reg(data, sensor, val);
+	/* Attribute any userspace write to OT_FAULT_LIMIT (0x4F) to its caller. */
+	if (sensor->reg == PMBUS_OT_FAULT_LIMIT)
+		dev_info(dev->parent,
+			 "OT_FAULT_LIMIT (0x4F) write: val=%lld regval=0x%04x by pid=%d (%s)\n",
+			 val, regval, task_pid_nr(current), current->comm);
 	ret = _pmbus_write_word_data(client, sensor->page, sensor->reg, regval);
 	if (ret < 0)
 		rv = ret;

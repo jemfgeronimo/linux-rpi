@@ -18,7 +18,7 @@
 #include <linux/log2.h>
 #include "pmbus.h"
 
-enum chips { adm1075, adm1272, adm1275, adm1276, adm1278, adm1281, adm1293, adm1294 };
+enum chips { adm1075, adm1272, adm1273, adm1275, adm1276, adm1278, adm1281, adm1293, adm1294 };
 
 #define ADM1275_MFR_STATUS_IOUT_WARN2	BIT(0)
 #define ADM1293_MFR_STATUS_VAUX_UV_WARN	BIT(5)
@@ -479,6 +479,7 @@ static int adm1275_read_byte_data(struct i2c_client *client, int page, int reg)
 static const struct i2c_device_id adm1275_id[] = {
 	{ "adm1075", adm1075 },
 	{ "adm1272", adm1272 },
+	{ "adm1273", adm1273 },
 	{ "adm1275", adm1275 },
 	{ "adm1276", adm1276 },
 	{ "adm1278", adm1278 },
@@ -506,6 +507,28 @@ static int adm1275_enable_vout_temp(struct adm1275_data *data,
 	return 0;
 }
 
+/*
+ * SMBus block reads return a leading byte-count before the data, which
+ * i2c_smbus_read_i2c_block_data_or_emulated() (plain I2C block read) does
+ * not strip off — read length+1 and shift past the count byte ourselves.
+ */
+static int adm1275_read_block_data_emulated(struct i2c_client *client, u8 command,
+					    u8 length, u8 *values)
+{
+	u8 buf[I2C_SMBUS_BLOCK_MAX + 1];
+	int ret;
+
+	ret = i2c_smbus_read_i2c_block_data_or_emulated(client, command, length + 1, buf);
+	if (ret < 0)
+		return ret;
+	if (ret < 1)
+		return -EIO;
+
+	ret = min_t(int, buf[0], min_t(int, ret - 1, length));
+	memcpy(values, &buf[1], ret);
+	return ret;
+}
+
 static int adm1275_probe(struct i2c_client *client)
 {
 	s32 (*config_read_fn)(const struct i2c_client *client, u8 reg);
@@ -522,11 +545,12 @@ static int adm1275_probe(struct i2c_client *client)
 	u32 avg;
 
 	if (!i2c_check_functionality(client->adapter,
-				     I2C_FUNC_SMBUS_READ_BYTE_DATA
-				     | I2C_FUNC_SMBUS_BLOCK_DATA))
+				     I2C_FUNC_SMBUS_READ_BYTE_DATA))
+				    //  | I2C_FUNC_SMBUS_BLOCK_DATA))
 		return -ENODEV;
 
-	ret = i2c_smbus_read_block_data(client, PMBUS_MFR_ID, block_buffer);
+	// ret = i2c_smbus_read_block_data(client, PMBUS_MFR_ID, block_buffer);
+	ret = adm1275_read_block_data_emulated(client, PMBUS_MFR_ID, 3, block_buffer);
 	if (ret < 0) {
 		dev_err(&client->dev, "Failed to read Manufacturer ID\n");
 		return ret;
@@ -536,7 +560,8 @@ static int adm1275_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	ret = i2c_smbus_read_block_data(client, PMBUS_MFR_MODEL, block_buffer);
+	// ret = i2c_smbus_read_block_data(client, PMBUS_MFR_MODEL, block_buffer);
+	ret = adm1275_read_block_data_emulated(client, PMBUS_MFR_MODEL, 10, block_buffer);
 	if (ret < 0) {
 		dev_err(&client->dev, "Failed to read Manufacturer Model\n");
 		return ret;
@@ -555,7 +580,8 @@ static int adm1275_probe(struct i2c_client *client)
 			   "Device mismatch: Configured %s, detected %s\n",
 			   client->name, mid->name);
 
-	if (mid->driver_data == adm1272 || mid->driver_data == adm1278 ||
+	if (mid->driver_data == adm1272 || mid->driver_data == adm1273 ||
+	    mid->driver_data == adm1278 ||
 	    mid->driver_data == adm1281 || mid->driver_data == adm1293 ||
 	    mid->driver_data == adm1294)
 		config_read_fn = i2c_smbus_read_word_data;
@@ -630,6 +656,7 @@ static int adm1275_probe(struct i2c_client *client)
 			  PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT;
 		break;
 	case adm1272:
+	case adm1273:
 		data->have_vout = true;
 		data->have_pin_max = true;
 		data->have_temp_max = true;
@@ -660,7 +687,12 @@ static int adm1275_probe(struct i2c_client *client)
 			PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT |
 			PMBUS_HAVE_TEMP | PMBUS_HAVE_STATUS_TEMP;
 
+		/* in adm1275_probe(), before adm1275_enable_vout_temp() call */
+		dev_info(&client->dev, "0x4F before enable_vout_temp: 0x%04x",
+				 i2c_smbus_read_word_data(client, 0x4F));
 		ret = adm1275_enable_vout_temp(data, client, config);
+		dev_info(&client->dev, "0x4F after enable_vout_temp: 0x%04x",
+				 i2c_smbus_read_word_data(client, 0x4F));
 		if (ret)
 			return ret;
 
