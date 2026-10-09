@@ -5,7 +5,10 @@
  * Copyright 2026 Analog Devices Inc.
  */
 
+#include <linux/array_size.h>
 #include <linux/bitfield.h>
+#include <linux/bitops.h>
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/iio/buffer.h>
@@ -13,72 +16,73 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/kfifo_buf.h>
 #include <linux/iio/sysfs.h>
+#include <linux/mutex.h>
+
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
+#include <linux/time.h>
+#include <linux/types.h>
 #include <linux/unaligned.h>
 #include <linux/units.h>
 
-#define MAX30210_STATUS_REG		0x00
-#define MAX30210_INT_EN_REG		0x02
-#define MAX30210_FIFO_DATA_REG		0x08
-#define MAX30210_FIFO_CONF_1_REG	0x09
-#define MAX30210_FIFO_CONF_2_REG	0x0A
-#define MAX30210_SYS_CONF_REG		0x11
-#define MAX30210_PIN_CONF_REG		0x12
-#define MAX30210_TEMP_ALM_HI_REG	0x22
-#define MAX30210_TEMP_ALM_LO_REG	0x24
-#define MAX30210_TEMP_INC_THRESH_REG	0x26
-#define MAX30210_TEMP_DEC_THRESH_REG	0x27
-#define MAX30210_TEMP_CONF_1_REG	0x28
-#define MAX30210_TEMP_CONF_2_REG	0x29
-#define MAX30210_TEMP_CONV_REG		0x2A
-#define MAX30210_TEMP_DATA_REG		0x2B
-#define MAX30210_TEMP_SLOPE_REG		0x2D
-#define MAX30210_UNIQUE_ID_REG		0x30
-#define MAX30210_PART_ID_REG		0xFF
+#define MAX30210_STATUS_REG			0x00
+#define   MAX30210_STATUS_A_FULL_MASK		BIT(7)
+#define   MAX30210_STATUS_TEMP_RDY_MASK		BIT(6)
+#define   MAX30210_STATUS_TEMP_DEC_MASK		BIT(5)
+#define   MAX30210_STATUS_TEMP_INC_MASK		BIT(4)
+#define   MAX30210_STATUS_TEMP_LO_MASK		BIT(3)
+#define   MAX30210_STATUS_TEMP_HI_MASK		BIT(2)
+#define   MAX30210_STATUS_PWR_RDY		BIT(0)
+#define MAX30210_INT_EN_REG			0x02
+#define MAX30210_FIFO_DATA_REG			0x08
+#define MAX30210_FIFO_CONF_1_REG		0x09
+#define   MAX30210_FIFOCONF1_A_FULL_MASK	GENMASK(5, 0)
+#define MAX30210_FIFO_CONF_2_REG		0x0A
+#define   MAX30210_FIFOCONF2_FLUSH_FIFO		BIT(4)
+#define MAX30210_SYS_CONF_REG			0x11
+#define   MAX30210_SYSCONF_RESET		BIT(0)
+#define MAX30210_PIN_CONF_REG			0x12
+#define   MAX30210_PINCONF_EXT_CNV_EN		BIT(7)
+#define   MAX30210_PINCONF_EXT_CVT_ICFG		BIT(6)
+#define   MAX30210_PINCONF_INT_FCFG_MASK	GENMASK(3, 2)
+#define   MAX30210_PINCONF_INT_OCFG_MASK	GENMASK(1, 0)
+#define MAX30210_TEMP_ALM_HI_REG		0x22
+#define MAX30210_TEMP_ALM_LO_REG		0x24
+#define MAX30210_TEMP_INC_THRESH_REG		0x26
+#define MAX30210_TEMP_DEC_THRESH_REG		0x27
+#define MAX30210_TEMP_CONF_1_REG		0x28
+#define   MAX30210_TEMPCONF1_CHG_DET_EN		BIT(3)
+#define   MAX30210_TEMPCONF1_RATE_CHG_FILTER_MASK	GENMASK(2, 0)
+#define MAX30210_TEMP_CONF_2_REG		0x29
+#define   MAX30210_TEMPCONF2_TEMP_PERIOD_MASK	GENMASK(3, 0)
+#define   MAX30210_TEMPCONF2_ALERT_MODE		BIT(7)
+#define MAX30210_TEMP_CONV_REG			0x2A
+#define   MAX30210_TEMPCONV_CONV_T		BIT(0)
+#define   MAX30210_TEMPCONV_AUTO		BIT(1)
+#define MAX30210_TEMP_DATA_REG			0x2B
+#define MAX30210_TEMP_SLOPE_REG			0x2D
+#define MAX30210_UNIQUE_ID_REG			0x30
+#define MAX30210_PART_ID_REG			0xFF
 
-#define MAX30210_STATUS_A_FULL_MASK   BIT(7)
-#define MAX30210_STATUS_TEMP_RDY_MASK BIT(6)
-#define MAX30210_STATUS_TEMP_DEC_MASK BIT(5)
-#define MAX30210_STATUS_TEMP_INC_MASK BIT(4)
-#define MAX30210_STATUS_TEMP_LO_MASK  BIT(3)
-#define MAX30210_STATUS_TEMP_HI_MASK  BIT(2)
-#define MAX30210_STATUS_PWR_RDY_MASK  BIT(0)
-
-#define MAX30210_FIFOCONF1_A_FULL_MASK		GENMASK(5, 0)
-#define MAX30210_FIFOCONF1_FLUSH_FIFO_MASK	BIT(4)
-
-#define MAX30210_SYSCONF_RESET_MASK		BIT(0)
-
-#define MAX30210_PINCONF_EXT_CNV_EN_MASK	BIT(7)
-#define MAX30210_PINCONF_EXT_CVT_ICFG_MASK	BIT(6)
-#define MAX30210_PINCONF_INT_FCFG_MASK		GENMASK(3, 2)
-#define MAX30210_PINCONF_INT_OCFG_MASK		GENMASK(1, 0)
-
-#define MAX30210_TEMPCONF1_CHG_DET_EN_MASK	BIT(3)
-#define MAX30210_TEMPCONF1_RATE_CHG_FILTER_MASK	GENMASK(2, 0)
-
-#define MAX30210_TEMPCONF2_TEMP_PERIOD_MASK	GENMASK(3, 0)
-#define MAX30210_TEMPCONF2_ALERT_MODE_MASK	BIT(7)
-
-#define MAX30210_TEMPCONV_AUTO_MASK	BIT(1)
-#define MAX30210_TEMPCONV_CONV_T_MASK	BIT(0)
-
-#define MAX30210_PART_ID		0x45
+#define MAX30210_PART_ID			0x45
 #define MAX30210_FIFO_SIZE			64
 #define MAX30210_FIFO_BYTES_PER_SAMPLE		3
 #define MAX30210_FIFO_TEMP_MASK			GENMASK(15, 0)
 #define MAX30210_FIFO_INVAL_DATA		GENMASK(23, 0)
-#define MAX30210_WATERMARK_DEFAULT	(0x40 - 0x1F)
+#define MAX30210_WATERMARK_DEFAULT		(0x40 - 0x1F)
 
-#define MAX30210_UNIQUE_ID_LEN		6
-#define MAX30210_EXT_CVT_FREQ_MIN	1
-#define MAX30210_EXT_CVT_FREQ_MAX	20
+#define MAX30210_UNIQUE_ID_LEN			6
+#define MAX30210_EXT_CVT_FREQ_MIN		1
+#define MAX30210_EXT_CVT_FREQ_MAX		20
 
 struct max30210_state {
 	struct regmap *regmap;
-	u8 watermark;
 	/* Raw FIFO byte buffer */
 	u8 fifo_buf[MAX30210_FIFO_BYTES_PER_SAMPLE * MAX30210_FIFO_SIZE];
+	/* Protects autoconv_users and the autonomous-conversion enable bit */
+	struct mutex lock;
+	unsigned int autoconv_users;
+	u8 watermark;
 };
 
 static const int max30210_samp_freq_avail[][2] = {
@@ -94,14 +98,28 @@ static const int max30210_samp_freq_avail[][2] = {
 	{ 8, 0 },
 };
 
+static bool max30210_volatile_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case MAX30210_STATUS_REG:
+	case MAX30210_FIFO_DATA_REG:
+	case MAX30210_TEMP_CONV_REG:
+	case MAX30210_TEMP_DATA_REG:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static const struct regmap_config max30210_regmap = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = MAX30210_PART_ID_REG,
+	.volatile_reg = max30210_volatile_reg,
+	.cache_type = REGCACHE_MAPLE,
 };
 
-static int max30210_read_temp(struct regmap *regmap, unsigned int reg,
-			      int *temp)
+static int max30210_read_temp(struct regmap *regmap, unsigned int reg, int *temp)
 {
 	__be16 val;
 	int ret;
@@ -115,14 +133,43 @@ static int max30210_read_temp(struct regmap *regmap, unsigned int reg,
 	return IIO_VAL_INT;
 }
 
-static int max30210_write_temp(struct regmap *regmap, unsigned int reg,
-			       int temp)
+static int max30210_write_temp(struct regmap *regmap, unsigned int reg, int temp)
 {
 	__be16 val;
 
 	val = cpu_to_be16(temp);
 
 	return regmap_bulk_write(regmap, reg, &val, sizeof(val));
+}
+
+/* Keeps the device sampling autonomously while buffer and/or events need it. */
+static int max30210_autoconv_get(struct max30210_state *st)
+{
+	int ret = 0;
+
+	mutex_lock(&st->lock);
+	if (st->autoconv_users == 0)
+		ret = regmap_write(st->regmap, MAX30210_TEMP_CONV_REG,
+				   MAX30210_TEMPCONV_AUTO | MAX30210_TEMPCONV_CONV_T);
+	if (!ret)
+		st->autoconv_users++;
+	mutex_unlock(&st->lock);
+
+	return ret;
+}
+
+static int max30210_autoconv_put(struct max30210_state *st)
+{
+	int ret = 0;
+
+	mutex_lock(&st->lock);
+	if (st->autoconv_users == 1)
+		ret = regmap_write(st->regmap, MAX30210_TEMP_CONV_REG, 0);
+	if (st->autoconv_users)
+		st->autoconv_users--;
+	mutex_unlock(&st->lock);
+
+	return ret;
 }
 
 static void max30210_fifo_read(struct iio_dev *indio_dev)
@@ -140,13 +187,14 @@ static void max30210_fifo_read(struct iio_dev *indio_dev)
 
 	for (unsigned int i = 0; i < st->watermark; i++) {
 		u32 raw = get_unaligned_be24(&st->fifo_buf[MAX30210_FIFO_BYTES_PER_SAMPLE * i]);
+		s16 temp;
 
 		if (raw == MAX30210_FIFO_INVAL_DATA) {
 			dev_err_ratelimited(&indio_dev->dev, "Invalid data\n");
 			continue;
 		}
 
-		s16 temp = (s16)FIELD_GET(MAX30210_FIFO_TEMP_MASK, raw);
+		temp = sign_extend32(FIELD_GET(MAX30210_FIFO_TEMP_MASK, raw), 15);
 
 		iio_push_to_buffers(indio_dev, &temp);
 	}
@@ -300,34 +348,46 @@ static int max30210_write_event_config(struct iio_dev *indio_dev,
 				       enum iio_event_direction dir, int state)
 {
 	struct max30210_state *st = iio_priv(indio_dev);
+	unsigned int mask;
+	int ret;
+
+	if (type != IIO_EV_TYPE_THRESH)
+		return -EINVAL;
 
 	switch (dir) {
 	case IIO_EV_DIR_RISING:
-		switch (type) {
-		case IIO_EV_TYPE_THRESH:
-			return regmap_update_bits(st->regmap, MAX30210_INT_EN_REG,
-						  MAX30210_STATUS_TEMP_HI_MASK,
-						  state ? MAX30210_STATUS_TEMP_HI_MASK : 0);
-		default:
-			return -EINVAL;
-		}
+		mask = MAX30210_STATUS_TEMP_HI_MASK;
+		break;
 	case IIO_EV_DIR_FALLING:
-		switch (type) {
-		case IIO_EV_TYPE_THRESH:
-			return regmap_update_bits(st->regmap, MAX30210_INT_EN_REG,
-						  MAX30210_STATUS_TEMP_LO_MASK,
-						  state ? MAX30210_STATUS_TEMP_LO_MASK : 0);
-		default:
-			return -EINVAL;
-		}
+		mask = MAX30210_STATUS_TEMP_LO_MASK;
+		break;
 	default:
 		return -EINVAL;
 	}
+
+	/*
+	 * Threshold events need the device sampling autonomously, independent
+	 * of whether the FIFO buffer is also enabled.
+	 */
+	if (state) {
+		ret = max30210_autoconv_get(st);
+		if (ret)
+			return ret;
+	}
+
+	ret = regmap_update_bits(st->regmap, MAX30210_INT_EN_REG, mask, state ? mask : 0);
+	if (ret) {
+		if (state)
+			max30210_autoconv_put(st);
+		return ret;
+	}
+
+	return state ? 0 : max30210_autoconv_put(st);
 }
 
 static int max30210_read_raw(struct iio_dev *indio_dev,
-			     struct iio_chan_spec const *chan, int *val,
-			     int *val2, long mask)
+			      struct iio_chan_spec const *chan,
+			      int *val, int *val2, long mask)
 {
 	struct max30210_state *st = iio_priv(indio_dev);
 	unsigned int uval;
@@ -336,30 +396,34 @@ static int max30210_read_raw(struct iio_dev *indio_dev,
 	switch (mask) {
 	case IIO_CHAN_INFO_SCALE:
 		*val = 5;
-		*val2 = 1000;
+		*val2 = MILLI;
 
 		return IIO_VAL_FRACTIONAL;
-	case IIO_CHAN_INFO_SAMP_FREQ:
+	case IIO_CHAN_INFO_SAMP_FREQ: {
+		unsigned int period;
+
 		ret = regmap_read(st->regmap, MAX30210_TEMP_CONF_2_REG, &uval);
 		if (ret)
 			return ret;
 
-		uval = FIELD_GET(MAX30210_TEMPCONF2_TEMP_PERIOD_MASK, uval);
+		period = FIELD_GET(MAX30210_TEMPCONF2_TEMP_PERIOD_MASK, uval);
 
 		/*
 		 * TEMP_PERIOD is an index into the sampling frequency lookup
 		 * table. Clamp in case the register holds a reserved value.
 		 */
-		uval = min_t(unsigned int, uval, ARRAY_SIZE(max30210_samp_freq_avail) - 1);
+		if (period >= ARRAY_SIZE(max30210_samp_freq_avail))
+			period = ARRAY_SIZE(max30210_samp_freq_avail) - 1;
 
-		*val = max30210_samp_freq_avail[uval][0];
-		*val2 = max30210_samp_freq_avail[uval][1];
+		*val = max30210_samp_freq_avail[period][0];
+		*val2 = max30210_samp_freq_avail[period][1];
 
 		return IIO_VAL_INT_PLUS_MICRO;
+	}
 	case IIO_CHAN_INFO_RAW: {
 		iio_device_claim_direct_scoped(return -EBUSY, indio_dev) {
 			ret = regmap_write(st->regmap, MAX30210_TEMP_CONV_REG,
-					   MAX30210_TEMPCONV_CONV_T_MASK);
+					   MAX30210_TEMPCONV_CONV_T);
 			if (ret)
 				return ret;
 
@@ -373,9 +437,8 @@ static int max30210_read_raw(struct iio_dev *indio_dev,
 			 * Use 10 ms timeout for margin.
 			 */
 			ret = regmap_read_poll_timeout(st->regmap, MAX30210_TEMP_CONV_REG, uval,
-						       !(uval & MAX30210_TEMPCONV_CONV_T_MASK),
-						       500,          /* poll every 500 µs */
-						       10000);       /* 10 ms timeout */
+						       !(uval & MAX30210_TEMPCONV_CONV_T),
+						       500, 10 * USEC_PER_MSEC);
 			if (ret)
 				return ret;
 
@@ -406,17 +469,17 @@ static int max30210_read_avail(struct iio_dev *indio_dev,
 }
 
 static int max30210_write_raw(struct iio_dev *indio_dev,
-			      struct iio_chan_spec const *chan, int val,
-			      int val2, long mask)
+			       struct iio_chan_spec const *chan,
+			       int val, int val2, long mask)
 {
 	struct max30210_state *st = iio_priv(indio_dev);
 
 	switch (mask) {
-	case IIO_CHAN_INFO_SAMP_FREQ: {
-		iio_device_claim_direct_scoped(return -EBUSY, indio_dev) {
-			if (val < 0 || val2 < 0)
-				return -EINVAL;
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		if (val < 0 || val2 < 0)
+			return -EINVAL;
 
+		iio_device_claim_direct_scoped(return -EBUSY, indio_dev) {
 			for (unsigned int i = 0; i < ARRAY_SIZE(max30210_samp_freq_avail); i++) {
 				if (val != max30210_samp_freq_avail[i][0] ||
 				    val2 != max30210_samp_freq_avail[i][1])
@@ -430,7 +493,6 @@ static int max30210_write_raw(struct iio_dev *indio_dev,
 			return -EINVAL;
 		}
 		return -EBUSY;
-	}
 	default:
 		return -EINVAL;
 	}
@@ -469,10 +531,10 @@ static ssize_t hwfifo_watermark_show(struct device *dev,
 	return sysfs_emit(buf, "%d\n", st->watermark);
 }
 
-IIO_STATIC_CONST_DEVICE_ATTR(hwfifo_watermark_min, "1");
-IIO_STATIC_CONST_DEVICE_ATTR(hwfifo_watermark_max,
-			     __stringify(MAX30210_FIFO_SIZE));
 static IIO_DEVICE_ATTR_RO(hwfifo_watermark, 0);
+
+IIO_STATIC_CONST_DEVICE_ATTR(hwfifo_watermark_min, "1");
+IIO_STATIC_CONST_DEVICE_ATTR(hwfifo_watermark_max, __stringify(MAX30210_FIFO_SIZE));
 
 static const struct iio_dev_attr *max30210_fifo_attributes[] = {
 	&iio_dev_attr_hwfifo_watermark_min,
@@ -494,13 +556,11 @@ static int max30210_buffer_preenable(struct iio_dev *indio_dev)
 
 	/* Flush FIFO before starting autonomous conversions */
 	ret = regmap_set_bits(st->regmap, MAX30210_FIFO_CONF_2_REG,
-			      MAX30210_FIFOCONF1_FLUSH_FIFO_MASK);
+			      MAX30210_FIFOCONF2_FLUSH_FIFO);
 	if (ret)
 		return ret;
 
-	/* Start autonomous temperature conversion */
-	return regmap_write(st->regmap, MAX30210_TEMP_CONV_REG,
-			    MAX30210_TEMPCONV_AUTO_MASK | MAX30210_TEMPCONV_CONV_T_MASK);
+	return max30210_autoconv_get(st);
 }
 
 static int max30210_buffer_postdisable(struct iio_dev *indio_dev)
@@ -508,14 +568,13 @@ static int max30210_buffer_postdisable(struct iio_dev *indio_dev)
 	struct max30210_state *st = iio_priv(indio_dev);
 	int ret;
 
-	/* Stop autonomous conversion */
-	ret = regmap_write(st->regmap, MAX30210_TEMP_CONV_REG, 0x0);
+	ret = max30210_autoconv_put(st);
 	if (ret)
 		return ret;
 
 	/* Flush FIFO */
 	ret = regmap_set_bits(st->regmap, MAX30210_FIFO_CONF_2_REG,
-			      MAX30210_FIFOCONF1_FLUSH_FIFO_MASK);
+			      MAX30210_FIFOCONF2_FLUSH_FIFO);
 	if (ret)
 		return ret;
 
@@ -570,15 +629,20 @@ static const struct iio_chan_spec max30210_channel = {
 	},
 };
 
+static void max30210_powerdown(void *data)
+{
+	struct gpio_desc *powerdown_gpio = data;
+
+	gpiod_set_value(powerdown_gpio, 1);
+}
+
 static int max30210_setup(struct max30210_state *st, struct device *dev)
 {
 	struct gpio_desc *powerdown_gpio;
 	unsigned int val;
 	int ret;
 
-	/* Optional hardware reset via powerdown GPIO */
-	powerdown_gpio = devm_gpiod_get_optional(dev, "powerdown",
-						 GPIOD_OUT_HIGH);
+	powerdown_gpio = devm_gpiod_get_optional(dev, "powerdown", GPIOD_OUT_HIGH);
 	if (IS_ERR(powerdown_gpio))
 		return dev_err_probe(dev, PTR_ERR(powerdown_gpio),
 				     "failed to request powerdown GPIO\n");
@@ -586,10 +650,13 @@ static int max30210_setup(struct max30210_state *st, struct device *dev)
 	if (powerdown_gpio) {
 		/* Deassert powerdown to power up device */
 		gpiod_set_value(powerdown_gpio, 0);
+
+		ret = devm_add_action_or_reset(dev, max30210_powerdown, powerdown_gpio);
+		if (ret)
+			return ret;
 	} else {
-		/* Software reset fallback */
 		ret = regmap_set_bits(st->regmap, MAX30210_SYS_CONF_REG,
-				      MAX30210_SYSCONF_RESET_MASK);
+				      MAX30210_SYSCONF_RESET);
 		if (ret)
 			return ret;
 	}
@@ -611,14 +678,12 @@ static int max30210_probe(struct i2c_client *client)
 	struct max30210_state *st;
 	int ret;
 
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -EOPNOTSUPP;
-
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*st));
 	if (!indio_dev)
 		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
+	mutex_init(&st->lock);
 
 	ret = devm_regulator_get_enable(dev, "vdd");
 	if (ret)
@@ -642,25 +707,32 @@ static int max30210_probe(struct i2c_client *client)
 	indio_dev->name = "max30210";
 	indio_dev->info = &max30210_info;
 
-	ret = devm_iio_kfifo_buffer_setup_ext(dev, indio_dev, &max30210_buffer_ops,
-					      max30210_fifo_attributes);
+	/* Without an interrupt there is no way to drain the FIFO into the buffer */
+	if (client->irq) {
+		ret = devm_iio_kfifo_buffer_setup_ext(dev, indio_dev, &max30210_buffer_ops,
+						      max30210_fifo_attributes);
+		if (ret)
+			return ret;
+	}
+
+	ret = devm_iio_device_register(dev, indio_dev);
 	if (ret)
 		return ret;
 
 	if (!client->irq)
-		return dev_err_probe(dev, -ENXIO, "Missing interrupt.\n");
+		return 0;
 
-	ret = devm_request_threaded_irq(dev, client->irq, NULL,
-					max30210_irq_handler, IRQF_ONESHOT,
-					indio_dev->name, indio_dev);
-	if (ret)
-		return ret;
-
-	return devm_iio_device_register(dev, indio_dev);
+	/*
+	 * Request the IRQ after registering the IIO device so devm tears it
+	 * down first on removal, before the event interface is freed.
+	 */
+	return devm_request_threaded_irq(dev, client->irq, NULL,
+					 max30210_irq_handler, IRQF_ONESHOT,
+					 indio_dev->name, indio_dev);
 }
 
 static const struct i2c_device_id max30210_id[] = {
-	{ "max30210" },
+	{ "max30210", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max30210_id);
