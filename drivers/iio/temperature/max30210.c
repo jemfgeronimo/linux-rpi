@@ -105,6 +105,7 @@ static bool max30210_volatile_reg(struct device *dev, unsigned int reg)
 	case MAX30210_FIFO_DATA_REG:
 	case MAX30210_TEMP_CONV_REG:
 	case MAX30210_TEMP_DATA_REG:
+	case MAX30210_FIFO_CONF_2_REG:
 		return true;
 	default:
 		return false;
