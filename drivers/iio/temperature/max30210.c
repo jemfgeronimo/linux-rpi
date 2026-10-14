@@ -105,7 +105,13 @@ static bool max30210_volatile_reg(struct device *dev, unsigned int reg)
 	case MAX30210_FIFO_DATA_REG:
 	case MAX30210_FIFO_CONF_2_REG:
 	case MAX30210_TEMP_CONV_REG:
+	/*
+	 * TEMP_DATA_REG is a 16-bit value spanning two byte registers;
+	 * both must be volatile or regmap_bulk_read()'s range check falls
+	 * back to caching the second byte forever (see max30210_read_temp()).
+	 */
 	case MAX30210_TEMP_DATA_REG:
+	case MAX30210_TEMP_DATA_REG + 1:
 		return true;
 	default:
 		return false;
@@ -426,10 +432,28 @@ static int max30210_read_raw(struct iio_dev *indio_dev,
 	}
 	case IIO_CHAN_INFO_RAW: {
 		iio_device_claim_direct_scoped(return -EBUSY, indio_dev) {
+			mutex_lock(&st->lock);
+
+			/*
+			 * TEMP_DATA_REG is only refreshed by a single-shot
+			 * conversion; the buffer/FIFO path is the only thing
+			 * that gets updated during AUTO mode. If AUTO is
+			 * already running for the buffer and/or events,
+			 * triggering a one-off conversion here would stomp
+			 * the AUTO bit out from under whoever enabled it, and
+			 * there is no way to get a fresh single-shot value
+			 * without doing so -- refuse instead of returning
+			 * stale data.
+			 */
+			if (st->autoconv_users > 0) {
+				ret = -EBUSY;
+				goto unlock;
+			}
+
 			ret = regmap_write(st->regmap, MAX30210_TEMP_CONV_REG,
 					   MAX30210_TEMPCONV_CONV_T);
 			if (ret)
-				return ret;
+				goto unlock;
 
 			/*
 			 * Wait until CONVERT_T auto-clears.
@@ -440,13 +464,17 @@ static int max30210_read_raw(struct iio_dev *indio_dev,
 			 * Worst-case conversion ≈ 8.26 ms.
 			 * Use 10 ms timeout for margin.
 			 */
-			ret = regmap_read_poll_timeout(st->regmap, MAX30210_TEMP_CONV_REG, uval,
+			ret = regmap_read_poll_timeout(st->regmap, MAX30210_TEMP_CONV_REG,
+						       uval,
 						       !(uval & MAX30210_TEMPCONV_CONV_T),
 						       500, 10 * USEC_PER_MSEC);
 			if (ret)
-				return ret;
+				goto unlock;
 
-			return max30210_read_temp(st->regmap, MAX30210_TEMP_DATA_REG, val);
+			ret = max30210_read_temp(st->regmap, MAX30210_TEMP_DATA_REG, val);
+unlock:
+			mutex_unlock(&st->lock);
+			return ret;
 		}
 		return -EBUSY;
 	}
