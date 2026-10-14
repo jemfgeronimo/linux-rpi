@@ -178,9 +178,12 @@ static void max30210_fifo_read(struct iio_dev *indio_dev)
 	struct max30210_state *st = iio_priv(indio_dev);
 	int ret;
 
-	ret = regmap_bulk_read(st->regmap, MAX30210_FIFO_DATA_REG,
-			       st->fifo_buf,
-			       MAX30210_FIFO_BYTES_PER_SAMPLE * st->watermark);
+	/* FIFO_DATA_REG auto-increments in hardware; bulk_read would treat
+	 * each subsequent byte as a separate cacheable register.
+	 */
+	ret = regmap_noinc_read(st->regmap, MAX30210_FIFO_DATA_REG,
+				st->fifo_buf,
+				MAX30210_FIFO_BYTES_PER_SAMPLE * st->watermark);
 	if (ret) {
 		dev_err(&indio_dev->dev, "Failed to read from fifo.\n");
 		return;
