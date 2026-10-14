@@ -7,6 +7,7 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pwm/pwm.h>
+#include <dt-bindings/pinctrl/bcm2835.h>
 
  /dts-v1/;
  /plugin/;
@@ -26,6 +27,14 @@
 	};
 };
 
+&gpio {
+	max30210_int_pins: max30210_int_pins {
+		brcm,pins = <17>;
+		brcm,function = <BCM2835_FSEL_GPIO_IN>;
+		brcm,pull = <BCM2835_PUD_UP>;
+	};
+};
+
 &i2c1 {
 	#address-cells = <1>;
 	#size-cells = <0>;
@@ -36,6 +45,9 @@
 		reg = <0x40>;
 		vdd-supply = <&vdd>;
 		powerdown-gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&max30210_int_pins>;
 
 		interrupt-parent = <&gpio>;
 		interrupts = <17 IRQ_TYPE_EDGE_BOTH>;
