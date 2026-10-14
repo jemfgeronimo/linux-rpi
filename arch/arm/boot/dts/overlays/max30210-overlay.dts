@@ -51,7 +51,5 @@
 
 		interrupt-parent = <&gpio>;
 		interrupts = <17 IRQ_TYPE_EDGE_BOTH>;
-
-		adi,roc-en;
 	};
 };
