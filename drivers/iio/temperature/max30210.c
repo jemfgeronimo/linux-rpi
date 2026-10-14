@@ -98,26 +98,10 @@ static const int max30210_samp_freq_avail[][2] = {
 	{ 8, 0 },
 };
 
-static bool max30210_volatile_reg(struct device *dev, unsigned int reg)
-{
-	switch (reg) {
-	case MAX30210_STATUS_REG:
-	case MAX30210_FIFO_DATA_REG:
-	case MAX30210_TEMP_CONV_REG:
-	case MAX30210_TEMP_DATA_REG:
-	case MAX30210_FIFO_CONF_2_REG:
-		return true;
-	default:
-		return false;
-	}
-}
-
 static const struct regmap_config max30210_regmap = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = MAX30210_PART_ID_REG,
-	.volatile_reg = max30210_volatile_reg,
-	.cache_type = REGCACHE_MAPLE,
 };
 
 static int max30210_read_temp(struct regmap *regmap, unsigned int reg, int *temp)
