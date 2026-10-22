@@ -3,6 +3,8 @@
  * Analog Devices MAX30210 I2C Temperature Sensor driver
  *
  * Copyright 2026 Analog Devices Inc.
+ *
+ * Datasheet: https://www.analog.com/media/en/technical-documentation/data-sheets/max30210.pdf
  */
 
 #include <linux/array_size.h>
@@ -11,19 +13,22 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/mutex.h>
+#include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
+#include <linux/sysfs.h>
+#include <linux/time.h>
+#include <linux/types.h>
+#include <linux/unaligned.h>
+#include <linux/units.h>
+
+#include <asm/byteorder.h>
+
 #include <linux/iio/buffer.h>
 #include <linux/iio/events.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/kfifo_buf.h>
 #include <linux/iio/sysfs.h>
-#include <linux/mutex.h>
-
-#include <linux/regmap.h>
-#include <linux/regulator/consumer.h>
-#include <linux/time.h>
-#include <linux/types.h>
-#include <linux/unaligned.h>
-#include <linux/units.h>
 
 #define MAX30210_STATUS_REG			0x00
 #define   MAX30210_STATUS_A_FULL_MASK		BIT(7)
@@ -152,29 +157,32 @@ static int max30210_write_temp(struct regmap *regmap, unsigned int reg, int temp
 /* Keeps the device sampling autonomously while buffer and/or events need it. */
 static int max30210_autoconv_get(struct max30210_state *st)
 {
-	int ret = 0;
+	int ret;
 
-	mutex_lock(&st->lock);
-	if (st->autoconv_users == 0)
+	lockdep_assert_held(&st->lock);
+
+	if (st->autoconv_users == 0) {
 		ret = regmap_write(st->regmap, MAX30210_TEMP_CONV_REG,
 				   MAX30210_TEMPCONV_AUTO | MAX30210_TEMPCONV_CONV_T);
-	if (!ret)
-		st->autoconv_users++;
-	mutex_unlock(&st->lock);
+		if (ret)
+			return ret;
+	}
 
-	return ret;
+	st->autoconv_users++;
+
+	return 0;
 }
 
 static int max30210_autoconv_put(struct max30210_state *st)
 {
 	int ret = 0;
 
-	mutex_lock(&st->lock);
+	lockdep_assert_held(&st->lock);
+
 	if (st->autoconv_users == 1)
 		ret = regmap_write(st->regmap, MAX30210_TEMP_CONV_REG, 0);
 	if (st->autoconv_users)
 		st->autoconv_users--;
-	mutex_unlock(&st->lock);
 
 	return ret;
 }
@@ -222,6 +230,11 @@ static irqreturn_t max30210_irq_handler(int irq, void *dev_id)
 		dev_err(&indio_dev->dev, "Status read failed\n");
 		return IRQ_NONE;
 	}
+
+	if (!(status & (MAX30210_STATUS_A_FULL_MASK |
+			MAX30210_STATUS_TEMP_HI_MASK |
+			MAX30210_STATUS_TEMP_LO_MASK)))
+		return IRQ_NONE;
 
 	if (status & MAX30210_STATUS_A_FULL_MASK)
 		max30210_fifo_read(indio_dev);
@@ -358,7 +371,7 @@ static int max30210_write_event_config(struct iio_dev *indio_dev,
 				       enum iio_event_direction dir, int state)
 {
 	struct max30210_state *st = iio_priv(indio_dev);
-	unsigned int mask;
+	unsigned int mask, val;
 	int ret;
 
 	if (type != IIO_EV_TYPE_THRESH)
@@ -375,6 +388,18 @@ static int max30210_write_event_config(struct iio_dev *indio_dev,
 		return -EINVAL;
 	}
 
+	mutex_lock(&st->lock);
+
+	/* The core does not dedupe; only take/drop a reference on a real change. */
+	ret = regmap_read(st->regmap, MAX30210_INT_EN_REG, &val);
+	if (ret)
+		goto unlock;
+
+	if (!!(val & mask) == !!state) {
+		ret = 0;
+		goto unlock;
+	}
+
 	/*
 	 * Threshold events need the device sampling autonomously, independent
 	 * of whether the FIFO buffer is also enabled.
@@ -382,22 +407,26 @@ static int max30210_write_event_config(struct iio_dev *indio_dev,
 	if (state) {
 		ret = max30210_autoconv_get(st);
 		if (ret)
-			return ret;
+			goto unlock;
 	}
 
 	ret = regmap_update_bits(st->regmap, MAX30210_INT_EN_REG, mask, state ? mask : 0);
 	if (ret) {
 		if (state)
 			max30210_autoconv_put(st);
-		return ret;
+		goto unlock;
 	}
 
-	return state ? 0 : max30210_autoconv_put(st);
+	ret = state ? 0 : max30210_autoconv_put(st);
+unlock:
+	mutex_unlock(&st->lock);
+
+	return ret;
 }
 
 static int max30210_read_raw(struct iio_dev *indio_dev,
-			      struct iio_chan_spec const *chan,
-			      int *val, int *val2, long mask)
+			     struct iio_chan_spec const *chan,
+			     int *val, int *val2, long mask)
 {
 	struct max30210_state *st = iio_priv(indio_dev);
 	unsigned int uval;
@@ -422,8 +451,7 @@ static int max30210_read_raw(struct iio_dev *indio_dev,
 		 * TEMP_PERIOD is an index into the sampling frequency lookup
 		 * table. Clamp in case the register holds a reserved value.
 		 */
-		if (period >= ARRAY_SIZE(max30210_samp_freq_avail))
-			period = ARRAY_SIZE(max30210_samp_freq_avail) - 1;
+		period = min(period, ARRAY_SIZE(max30210_samp_freq_avail) - 1);
 
 		*val = max30210_samp_freq_avail[period][0];
 		*val2 = max30210_samp_freq_avail[period][1];
@@ -501,8 +529,8 @@ static int max30210_read_avail(struct iio_dev *indio_dev,
 }
 
 static int max30210_write_raw(struct iio_dev *indio_dev,
-			       struct iio_chan_spec const *chan,
-			       int val, int val2, long mask)
+			      struct iio_chan_spec const *chan,
+			      int val, int val2, long mask)
 {
 	struct max30210_state *st = iio_priv(indio_dev);
 
@@ -590,29 +618,44 @@ static int max30210_buffer_preenable(struct iio_dev *indio_dev)
 	ret = regmap_set_bits(st->regmap, MAX30210_FIFO_CONF_2_REG,
 			      MAX30210_FIFOCONF2_FLUSH_FIFO);
 	if (ret)
-		return ret;
+		goto err_disable_irq;
 
-	return max30210_autoconv_get(st);
+	mutex_lock(&st->lock);
+	ret = max30210_autoconv_get(st);
+	mutex_unlock(&st->lock);
+	if (ret)
+		goto err_disable_irq;
+
+	return 0;
+
+err_disable_irq:
+	/* The core won't call postdisable() when preenable() fails. */
+	regmap_clear_bits(st->regmap, MAX30210_INT_EN_REG,
+			  MAX30210_STATUS_A_FULL_MASK);
+
+	return ret;
 }
 
 static int max30210_buffer_postdisable(struct iio_dev *indio_dev)
 {
 	struct max30210_state *st = iio_priv(indio_dev);
-	int ret;
+	int ret, err;
 
-	ret = max30210_autoconv_put(st);
-	if (ret)
-		return ret;
+	mutex_lock(&st->lock);
+	err = max30210_autoconv_put(st);
+	mutex_unlock(&st->lock);
 
-	/* Flush FIFO */
+	/* Keep going on error so the interrupt is always disabled below. */
 	ret = regmap_set_bits(st->regmap, MAX30210_FIFO_CONF_2_REG,
 			      MAX30210_FIFOCONF2_FLUSH_FIFO);
-	if (ret)
-		return ret;
+	if (!err)
+		err = ret;
 
 	/* Disable FIFO-full interrupt */
-	return regmap_clear_bits(st->regmap, MAX30210_INT_EN_REG,
-				 MAX30210_STATUS_A_FULL_MASK);
+	ret = regmap_clear_bits(st->regmap, MAX30210_INT_EN_REG,
+				MAX30210_STATUS_A_FULL_MASK);
+
+	return err ?: ret;
 }
 
 static const struct iio_buffer_setup_ops max30210_buffer_ops = {
@@ -687,6 +730,9 @@ static int max30210_setup(struct max30210_state *st, struct device *dev)
 		if (ret)
 			return ret;
 	} else {
+		/* The supply was just enabled; the device needs tPU before it accepts I2C. */
+		fsleep(700);
+
 		ret = regmap_set_bits(st->regmap, MAX30210_SYS_CONF_REG,
 				      MAX30210_SYSCONF_RESET);
 		if (ret)
@@ -715,7 +761,10 @@ static int max30210_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
-	mutex_init(&st->lock);
+
+	ret = devm_mutex_init(dev, &st->lock);
+	if (ret)
+		return ret;
 
 	ret = devm_regulator_get_enable(dev, "vdd");
 	if (ret)
@@ -739,7 +788,7 @@ static int max30210_probe(struct i2c_client *client)
 	indio_dev->name = "max30210";
 	indio_dev->info = &max30210_info;
 
-	/* Without an interrupt there is no way to drain the FIFO into the buffer */
+	/* Currently, without an interrupt there is no way to drain the FIFO into the buffer */
 	if (client->irq) {
 		ret = devm_iio_kfifo_buffer_setup_ext(dev, indio_dev, &max30210_buffer_ops,
 						      max30210_fifo_attributes);
@@ -764,7 +813,7 @@ static int max30210_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max30210_id[] = {
-	{ "max30210", 0 },
+	{ .name = "max30210" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max30210_id);
