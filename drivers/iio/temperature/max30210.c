@@ -711,6 +711,15 @@ static void max30210_powerdown(void *data)
 	gpiod_set_value(powerdown_gpio, 1);
 }
 
+static void max30210_quiesce(void *data)
+{
+	struct max30210_state *st = data;
+
+	/* Stop interrupt sources and autonomous conversions; errors are not actionable here */
+	regmap_write(st->regmap, MAX30210_INT_EN_REG, 0);
+	regmap_write(st->regmap, MAX30210_TEMP_CONV_REG, 0);
+}
+
 static int max30210_setup(struct max30210_state *st, struct device *dev)
 {
 	struct gpio_desc *powerdown_gpio;
@@ -792,6 +801,11 @@ static int max30210_probe(struct i2c_client *client)
 	if (client->irq) {
 		ret = devm_iio_kfifo_buffer_setup_ext(dev, indio_dev, &max30210_buffer_ops,
 						      max30210_fifo_attributes);
+		if (ret)
+			return ret;
+
+		/* Runs after unregister, so nothing can re-arm the device; before powerdown. */
+		ret = devm_add_action_or_reset(dev, max30210_quiesce, st);
 		if (ret)
 			return ret;
 	}
