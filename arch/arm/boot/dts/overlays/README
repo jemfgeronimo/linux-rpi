@@ -506,6 +506,21 @@ Params: activelow               Set to "on" to invert the sense of the LED
                                 REQUIRED
 
 
+Name:   ad5940
+Info:   Overlay for the Analog Devices AD5940/AD5941 analog front end on SPI0
+        (CE0). The AFE GPIO0 interrupt output must be wired to the interrupt
+        GPIO and the RESET pin to the reset GPIO. AVDD, DVDD and IOVDD are
+        assumed to be supplied with 3.3V. Four single-ended inputs AIN0-AIN3
+        are exposed as IIO voltage channels.
+Load:   dtoverlay=ad5940,<param>=<val>
+Params: int_pin                 GPIO used for INT (default 24)
+
+        reset_pin               GPIO used for RESET, active low (default 25)
+
+        speed                   SPI bus speed in Hz (default 4000000, the
+                                device supports up to 12500000)
+
+
 Name:   adafruit-st7735r
 Info:   Overlay for the SPI-connected Adafruit 1.8" 160x128 or 128x128 displays,
         based on the ST7735R chip.

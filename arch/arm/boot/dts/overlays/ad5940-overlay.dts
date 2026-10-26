@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Overlay for the Analog Devices AD5940/AD5941 analog front end on SPI0 CE0
+ *
+ * Copyright 2026 Analog Devices Inc.
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/iio/adc/adi,ad5940.h>
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			ad5940_vdd: regulator-ad5940-vdd {
+				compatible = "regulator-fixed";
+				regulator-name = "ad5940-vdd";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&spi0>;
+		__overlay__ {
+			/* needed to avoid dtc warning */
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			status = "okay";
+
+			ad5940: adc@0 {
+				compatible = "adi,ad5940";
+				reg = <0>; /* CE0 */
+				spi-max-frequency = <4000000>;
+				pinctrl-names = "default";
+				pinctrl-0 = <&ad5940_pins>;
+				interrupt-parent = <&gpio>;
+				interrupts = <24 0x2>; /* falling edge */
+				reset-gpios = <&gpio 25 GPIO_ACTIVE_LOW>;
+				avdd-supply = <&ad5940_vdd>;
+				dvdd-supply = <&ad5940_vdd>;
+				iovdd-supply = <&ad5940_vdd>;
+				/* AFE GPIO0 is wired to the interrupt GPIO */
+				adi,interrupt-io = <0>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				channel@0 {
+					reg = <0>;
+					diff-channels = <AD5940_ADC_INPUTP_AIN0
+							 AD5940_ADC_INPUTN_VBIAS_CAP>;
+					label = "ain0";
+				};
+
+				channel@1 {
+					reg = <1>;
+					diff-channels = <AD5940_ADC_INPUTP_AIN1
+							 AD5940_ADC_INPUTN_VBIAS_CAP>;
+					label = "ain1";
+				};
+
+				channel@2 {
+					reg = <2>;
+					diff-channels = <AD5940_ADC_INPUTP_AIN2
+							 AD5940_ADC_INPUTN_VBIAS_CAP>;
+					label = "ain2";
+				};
+
+				channel@3 {
+					reg = <3>;
+					diff-channels = <AD5940_ADC_INPUTP_AIN3
+							 AD5940_ADC_INPUTN_VBIAS_CAP>;
+					label = "ain3";
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+		target = <&spidev0>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@3 {
+		target = <&gpio>;
+		__overlay__ {
+			ad5940_pins: ad5940_pins {
+				brcm,pins = <24>;
+				brcm,function = <0>; /* in */
+				brcm,pull = <0>; /* none */
+			};
+		};
+	};
+
+	__overrides__ {
+		int_pin   = <&ad5940>, "interrupts:0",
+			    <&ad5940_pins>, "brcm,pins:0";
+		reset_pin = <&ad5940>, "reset-gpios:4";
+		speed     = <&ad5940>, "spi-max-frequency:0";
+	};
+};
